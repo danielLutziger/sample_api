@@ -6,8 +6,10 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import os
+from dotenv import load_dotenv
 
 app = FastAPI()
+load_dotenv()
 
 
 @app.get("/")
