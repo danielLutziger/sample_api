@@ -33,12 +33,13 @@ def generate_ics_file(booking_details, services, total_duration, total_price):
         'minutes': total_duration % 60
     }
     e.name = f"Booking: {', '.join([s['title'] for s in services])}"
+    servs = ', '.join([f"{s['title']} ({s['duration']} Minuten)" for s in services])
     e.description = (
         f"Buchung für {booking_details['firstname']} {booking_details['lastname']}\n"
         f"E-Mail: {booking_details['email']}\n"
         f"Telefon: {booking_details['phone']}\n"
         f"Datum: {booking_details['date']}, Zeit: {booking_details['time']}\n"
-        f"Services: {', '.join([f'{s['title']} ({s['duration']} Minuten)' for s in services])}\n"
+        f"Services: {servs}\n"
         f"Ungefährer Preis: CHF {total_price}\n"
         "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich."
     )
