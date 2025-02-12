@@ -9,10 +9,12 @@ from sqlalchemy.orm import sessionmaker
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 import uvicorn
 from google.cloud.sql.connector import Connector
 from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import uuid
 
 app = FastAPI()
@@ -30,7 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 connector = Connector()
 
@@ -85,24 +86,8 @@ def create_bookings_table():
         """))
         connection.commit()
 
+
 create_bookings_table()
-
-
-def send_email(subject, recipient, body):
-    sender_email = os.getenv('EMAIL_USER')
-    password = os.getenv('EMAIL_PASS')
-
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = recipient
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-
-    server = smtplib.SMTP(os.getenv('EMAIL_HOST'), int(os.getenv('EMAIL_PORT')))
-    server.starttls()
-    server.login(sender_email, password)
-    server.sendmail(sender_email, recipient, msg.as_string())
-    server.quit()
 
 
 # Models
@@ -117,11 +102,13 @@ class Service(BaseModel):
     reduction: Optional[str]
     extras: Optional[str] = None
 
+
 class DateInfo(BaseModel):
     date: str
     startTime: str
     endTime: Optional[str]
     duration: Optional[int]
+
 
 class BookingRequest(BaseModel):
     email: str
@@ -140,6 +127,65 @@ class BookingRequest(BaseModel):
 
 class AppointmentCancelRequest(BaseModel):
     id: str
+
+
+def generate_ics_file(booking_details: BookingRequest, services: List[Service], total_duration: int,
+                      total_price: float, booking_hash: uuid):
+    c = Calendar()
+    e = Event()
+
+    date_parts = booking_details.date.split(".")[::-1]
+    year, month, day = map(int, date_parts)
+    hour, minute = map(int, booking_details.time.split(":"))
+
+    start_time = datetime(year, month, day, hour, minute, tzinfo=timezone.utc) - timedelta(hours=1)
+
+    e.begin = start_time.strftime("%Y-%m-%dT%H:%M:%S")
+    e.duration = {
+        'hours': total_duration // 60,
+        'minutes': total_duration % 60
+    }
+    e.name = f"Booking: {', '.join([s.title for s in services])}"
+    servs = ', '.join([f"{s.title} ({s.duration} Minuten)" for s in services])
+    e.description = (
+        f"Termin ID: {booking_hash}\n"
+        f"Buchung für {booking_details.firstname} {booking_details.lastname}\n"
+        f"E-Mail: {booking_details.email}\n"
+        f"Telefon: {booking_details.phone}\n"
+        f"Datum: {booking_details.date}, Zeit: {booking_details.time}\n"
+        f"Services: {servs}\n"
+        f"Ungefährer Preis: CHF {total_price}\n"
+        "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich."
+    )
+    e.location = "Kirchgasse 3, 9500 Wil, Schweiz"
+    e.status = "CONFIRMED"
+
+    c.events.add(e)
+    return str(c)
+
+
+def send_email(subject, recipient, body, ics_content=None):
+    sender_email = os.getenv('EMAIL_USER')
+    password = os.getenv('EMAIL_PASS')
+
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    if ics_content:
+        ics_attachment = MIMEBase('text', 'calendar')
+        ics_attachment.set_payload(ics_content)
+        encoders.encode_base64(ics_attachment)
+        ics_attachment.add_header('Content-Disposition', 'attachment', filename="appointment.ics")
+        msg.attach(ics_attachment)
+
+    server = smtplib.SMTP(os.getenv('EMAIL_HOST'), int(os.getenv('EMAIL_PORT')))
+    server.starttls()
+    server.login(sender_email, password)
+    server.sendmail(sender_email, recipient, msg.as_string())
+    server.quit()
 
 
 # Dependency to get DB session
@@ -197,6 +243,7 @@ def book_appointment(request: BookingRequest, db=Depends(get_db)):
         raise HTTPException(status_code=400, detail="Failed to book appointment")
 
     booking_id = result[0]
+    total_price = 0
     for service in request.services:
         db.execute(text("""
             INSERT INTO booking_services (booking_id, service_id, title, price, duration, description, image, reduction)
@@ -211,9 +258,20 @@ def book_appointment(request: BookingRequest, db=Depends(get_db)):
             "image": service.image,
             "reduction": service.reduction
         })
+        total_price += service.price
     db.commit()
 
-    return {"id": booking_hash}
+    try:
+        body = "Ihr Termin wurde erfolgreich gebucht. Bitte finden Sie die Buchungsdetails in der angehängten .ics Datei."
+        ics = generate_ics_file(booking_details=request, services=request.services,
+                                total_duration=request.dateInfo.duration, total_price=total_price,
+                                booking_hash=booking_hash)
+        send_email("Termin erfolgreich gebucht", os.getenv("EMAIL_TO"), body, ics)
+        send_email("Termin erfolgreich gebucht", request.email, body, ics)
+        return {"id": booking_hash}
+    except:
+        print("Mail sending went wrong. Probably wrong email from user.")
+        return {"id": booking_hash}
 
 
 @app.get("/api/booked-slots")
@@ -236,54 +294,20 @@ def cancel_appointment(booking_hash: str, db=Depends(get_db)):
     db.commit()
 
     if not result:
-        raise HTTPException(status_code=404, detail="Appointment not found")
+        raise HTTPException(status_code=404, detail="Termin nicht gefunden")
 
+    body = (
+        f"Buchung für {result[6]} {result[7]} vom {result[4].strftime('%d.%m.%Y')}, {result[4].strftime('%H:%M')} erfolgreich abgesagt."
+    )
+
+    send_email("Termin erfolgreich abgesagt", os.getenv("EMAIL_TO"), body)
+    send_email("Termin erfolgreich abgesagt", result[2], body)
     return {"message": "Appointment deleted successfully"}
+
 
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
-
-
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-
-@app.get("/hello/{name}")
-async def say_hello(name: str):
-    return {"message": f"Hello {name}"}
-
-def generate_ics_file(booking_details, services, total_duration, total_price):
-    c = Calendar()
-    e = Event()
-
-    date_parts = booking_details['date'].split(".")[::-1]
-    year, month, day = map(int, date_parts)
-    hour, minute = map(int, booking_details['time'].split(":"))
-
-    e.begin = f"{year}-{month:02d}-{day:02d}T{hour:02d}:{minute:02d}:00"
-    e.duration = {
-        'hours': total_duration // 60,
-        'minutes': total_duration % 60
-    }
-    e.name = f"Booking: {', '.join([s['title'] for s in services])}"
-    servs = ', '.join([f"{s['title']} ({s['duration']} Minuten)" for s in services])
-    e.description = (
-        f"Buchung für {booking_details['firstname']} {booking_details['lastname']}\n"
-        f"E-Mail: {booking_details['email']}\n"
-        f"Telefon: {booking_details['phone']}\n"
-        f"Datum: {booking_details['date']}, Zeit: {booking_details['time']}\n"
-        f"Services: {servs}\n"
-        f"Ungefährer Preis: CHF {total_price}\n"
-        "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich."
-    )
-    e.location = "Kirchgasse 3, 9500 Wil, Schweiz"
-    e.status = "CONFIRMED"
-
-    c.events.add(e)
-    return str(c)
 
 
 if __name__ == "__main__":
