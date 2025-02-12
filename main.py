@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
+from typing import List, Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import smtplib
@@ -10,10 +11,26 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import uvicorn
 from google.cloud.sql.connector import Connector
-
+from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timedelta
+import uuid
 
 app = FastAPI()
 load_dotenv()
+
+origins = [
+    "http://localhost:5173",  # running locally
+    "https://yourfrontend.com"  # deployed URL
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 connector = Connector()
 
@@ -37,6 +54,40 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def create_bookings_table():
+    with engine.connect() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS bookings (
+                id SERIAL PRIMARY KEY,
+                booking_hash TEXT UNIQUE NOT NULL,
+                user_email TEXT NOT NULL,
+                user_phone TEXT NOT NULL,
+                start_time TIMESTAMP NOT NULL,
+                end_time TIMESTAMP NOT NULL,
+                firstname TEXT NOT NULL,
+                lastname TEXT NOT NULL,
+                agbChecked BOOLEAN NOT NULL,
+                bemerkung TEXT
+            );
+        """))
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS booking_services (
+                id SERIAL PRIMARY KEY,
+                booking_id INT NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+                service_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                price FLOAT NOT NULL,
+                duration INT,
+                description TEXT,
+                image TEXT,
+                reduction TEXT
+            );
+        """))
+        connection.commit()
+
+create_bookings_table()
+
+
 def send_email(subject, recipient, body):
     sender_email = os.getenv('EMAIL_USER')
     password = os.getenv('EMAIL_PASS')
@@ -55,12 +106,36 @@ def send_email(subject, recipient, body):
 
 
 # Models
+class Service(BaseModel):
+    id: str
+    title: str
+    price: float
+    duration: Optional[int]
+    description: Optional[str]
+    image: Optional[str]
+    images: Optional[List[str]]
+    reduction: Optional[str]
+    extras: Optional[str] = None
+
+class DateInfo(BaseModel):
+    date: str
+    startTime: str
+    endTime: Optional[str]
+    duration: Optional[int]
+
 class BookingRequest(BaseModel):
     email: str
     phone: str
     date: str
-    start_time: str
-    duration: int
+    time: str
+    firstname: str
+    lastname: str
+    agbChecked: bool
+    bemerkung: Optional[str]
+    emailError: bool
+    phoneError: bool
+    dateInfo: DateInfo
+    services: List[Service]
 
 
 class AppointmentCancelRequest(BaseModel):
@@ -78,49 +153,67 @@ def get_db():
 
 @app.post("/api/terminanfrage")
 def book_appointment(request: BookingRequest, db=Depends(get_db)):
+    duration = sum(service.duration for service in request.services if service.duration)
+
+    # Parse start_time and calculate end_time in Python
+    start_time = datetime.strptime(f"{request.date} {request.time}", "%d.%m.%Y %H:%M")
+    end_time = start_time + timedelta(minutes=duration)
+    booking_hash = str(uuid.uuid4())
+
+    # Check for overlapping bookings
+    overlap_query = text("""
+        SELECT 1 FROM bookings 
+        WHERE start_time < :end_time AND end_time > :start_time
+    """)
+    overlap = db.execute(overlap_query, {
+        "start_time": start_time,
+        "end_time": end_time
+    }).fetchone()
+
+    if overlap:
+        raise HTTPException(status_code=400, detail="Time slot is overlapping with another booking. Book another time")
+
+    # Insert the booking
     query = text("""
-        WITH new_booking AS (
-            SELECT
-                MAKE_TIMESTAMP(
-                    SPLIT_PART(:date, '.', 3)::INT,
-                    SPLIT_PART(:date, '.', 2)::INT,
-                    SPLIT_PART(:date, '.', 1)::INT,
-                    SPLIT_PART(:start_time, ':', 1)::INT,
-                    SPLIT_PART(:start_time, ':', 2)::INT,
-                    0
-                ) AS start_time,
-                MAKE_TIMESTAMP(
-                    SPLIT_PART(:date, '.', 3)::INT,
-                    SPLIT_PART(:date, '.', 2)::INT,
-                    SPLIT_PART(:date, '.', 1)::INT,
-                    SPLIT_PART(:start_time, ':', 1)::INT,
-                    SPLIT_PART(:start_time, ':', 2)::INT,
-                    0
-                ) + (:duration * INTERVAL '1 minute') AS end_time
-        )
-        INSERT INTO "Appointment" (user_email, user_phone, start_time, end_time)
-        SELECT :email, :phone, start_time, end_time FROM new_booking
-        WHERE NOT EXISTS (
-            SELECT 1 FROM "Appointment"
-            WHERE tstzrange(start_time, end_time, '[]') &&
-            tstzrange((SELECT start_time FROM new_booking), (SELECT end_time FROM new_booking), '[]')
-        )
+        INSERT INTO bookings (booking_hash, user_email, user_phone, start_time, end_time, firstname, lastname, agbChecked, bemerkung)
+        VALUES (:booking_hash, :email, :phone, :start_time, :end_time, :firstname, :lastname, :agbChecked, :bemerkung)
         RETURNING id;
     """)
 
     result = db.execute(query, {
-        "date": request.date,
-        "start_time": request.start_time,
-        "duration": request.duration,
+        "booking_hash": booking_hash,
         "email": request.email,
-        "phone": request.phone
+        "phone": request.phone,
+        "start_time": start_time,
+        "end_time": end_time,
+        "firstname": request.firstname,
+        "lastname": request.lastname,
+        "agbChecked": request.agbChecked,
+        "bemerkung": request.bemerkung
     }).fetchone()
-
     db.commit()
+
     if not result:
-        raise HTTPException(status_code=400, detail="Time slot already booked")
-    # TODO send mail as well
-    return {"id": result[0]}
+        raise HTTPException(status_code=400, detail="Failed to book appointment")
+
+    booking_id = result[0]
+    for service in request.services:
+        db.execute(text("""
+            INSERT INTO booking_services (booking_id, service_id, title, price, duration, description, image, reduction)
+            VALUES (:booking_id, :service_id, :title, :price, :duration, :description, :image, :reduction)
+        """), {
+            "booking_id": booking_id,
+            "service_id": service.id,
+            "title": service.title,
+            "price": service.price,
+            "duration": service.duration,
+            "description": service.description,
+            "image": service.image,
+            "reduction": service.reduction
+        })
+    db.commit()
+
+    return {"id": booking_hash}
 
 
 @app.get("/api/booked-slots")
@@ -130,24 +223,22 @@ def get_booked_slots(db=Depends(get_db)):
             TO_CHAR(start_time, 'DD.MM.YYYY') AS date,
             TO_CHAR(start_time, 'HH24:MI') AS start_time,
             TO_CHAR(end_time, 'HH24:MI') AS end_time
-        FROM "Appointment";
+        FROM bookings;
     """)
     slots = db.execute(query).fetchall()
-    return slots
+    return [{"date": slot.date, "startTime": slot.start_time, "endTime": slot.end_time} for slot in slots]
 
 
-@app.delete("/api/terminabsage/{appointment_id}")
-def cancel_appointment(appointment_id: str, db=Depends(get_db)):
-    query = text('DELETE FROM "Appointment" WHERE id = :id RETURNING *;')
-    result = db.execute(query, {"id": appointment_id}).fetchone()
+@app.delete("/api/terminabsage/{booking_hash}")
+def cancel_appointment(booking_hash: str, db=Depends(get_db)):
+    query = text("DELETE FROM bookings WHERE booking_hash = :booking_hash RETURNING *;")
+    result = db.execute(query, {"booking_hash": booking_hash}).fetchone()
     db.commit()
 
     if not result:
         raise HTTPException(status_code=404, detail="Appointment not found")
 
-    send_email("Nancy Nails Termin Abgesagt", os.getenv('EMAIL_TO'), f"Termin mit ID {appointment_id} wurde abgesagt.")
     return {"message": "Appointment deleted successfully"}
-
 
 @app.get("/api/health")
 def health_check():
