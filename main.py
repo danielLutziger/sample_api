@@ -155,7 +155,7 @@ def generate_ics_file(booking_details: BookingRequest, services: List[Service], 
         f"Datum: {booking_details.date}, Zeit: {booking_details.time}\n"
         f"Services: {servs}\n"
         f"Ungefährer Preis: CHF {total_price}\n"
-        "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich: +41 79 968 11 84
+        "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich: +41 79 968 11 84"
     )
     e.location = "Kirchgasse 3, 9500 Wil, Schweiz"
     e.status = "CONFIRMED"
