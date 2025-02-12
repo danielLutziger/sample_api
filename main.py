@@ -22,7 +22,8 @@ load_dotenv()
 
 origins = [
     "http://localhost:5173",  # running locally
-    "https://storage.googleapis.com" # deployed URL
+    "https://storage.googleapis.com", # deployed URL
+    "https://just-aloe.oa.r.appspot.com" # deployed URL
 ]
 
 app.add_middleware(
