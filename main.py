@@ -1,37 +1,140 @@
-from fastapi import FastAPI, HTTPException, Request
 from ics import Calendar, Event
+from dotenv import load_dotenv
+import os
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 import os
-from dotenv import load_dotenv
-from google.cloud.sql.connector import Connector
-import sqlalchemy
 
 app = FastAPI()
 load_dotenv()
 
-connector = Connector()
+DATABASE_URL = f"postgresql+pg8000://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@{os.getenv('INSTANCE_CONNECTION_NAME')}/{os.getenv('DB_NAME')}"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-def getconn():
-    return connector.connect(
-        os.getenv('INSTANCE_CONNECTION_NAME'),
-        "pg8000",
-        user=os.getenv('DB_USER'),
-        password=os.getenv('DB_PASS'),
-        db=os.getenv('DB_NAME')
-    )
 
-engine = sqlalchemy.create_engine(
-    "postgresql+pg8000://",
-    creator=getconn
-)
+def send_email(subject, recipient, body):
+    sender_email = os.getenv('EMAIL_USER')
+    password = os.getenv('EMAIL_PASS')
 
-with engine.connect() as connection:
-    result = connection.execute("SELECT NOW();")
-    print("Current Timestamp:", result.fetchone())
+    msg = MIMEMultipart()
+    msg['From'] = sender_email
+    msg['To'] = recipient
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    server = smtplib.SMTP(os.getenv('EMAIL_HOST'), int(os.getenv('EMAIL_PORT')))
+    server.starttls()
+    server.login(sender_email, password)
+    server.sendmail(sender_email, recipient, msg.as_string())
+    server.quit()
+
+
+# Models
+class BookingRequest(BaseModel):
+    email: str
+    phone: str
+    date: str
+    start_time: str
+    duration: int
+
+
+class AppointmentCancelRequest(BaseModel):
+    id: str
+
+
+# Dependency to get DB session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@app.post("/api/terminanfrage")
+def book_appointment(request: BookingRequest, db=Depends(get_db)):
+    query = text("""
+        WITH new_booking AS (
+            SELECT
+                MAKE_TIMESTAMP(
+                    SPLIT_PART(:date, '.', 3)::INT,
+                    SPLIT_PART(:date, '.', 2)::INT,
+                    SPLIT_PART(:date, '.', 1)::INT,
+                    SPLIT_PART(:start_time, ':', 1)::INT,
+                    SPLIT_PART(:start_time, ':', 2)::INT,
+                    0
+                ) AS start_time,
+                MAKE_TIMESTAMP(
+                    SPLIT_PART(:date, '.', 3)::INT,
+                    SPLIT_PART(:date, '.', 2)::INT,
+                    SPLIT_PART(:date, '.', 1)::INT,
+                    SPLIT_PART(:start_time, ':', 1)::INT,
+                    SPLIT_PART(:start_time, ':', 2)::INT,
+                    0
+                ) + (:duration * INTERVAL '1 minute') AS end_time
+        )
+        INSERT INTO "Appointment" (user_email, user_phone, start_time, end_time)
+        SELECT :email, :phone, start_time, end_time FROM new_booking
+        WHERE NOT EXISTS (
+            SELECT 1 FROM "Appointment"
+            WHERE tstzrange(start_time, end_time, '[]') &&
+            tstzrange((SELECT start_time FROM new_booking), (SELECT end_time FROM new_booking), '[]')
+        )
+        RETURNING id;
+    """)
+
+    result = db.execute(query, {
+        "date": request.date,
+        "start_time": request.start_time,
+        "duration": request.duration,
+        "email": request.email,
+        "phone": request.phone
+    }).fetchone()
+
+    db.commit()
+    if not result:
+        raise HTTPException(status_code=400, detail="Time slot already booked")
+    # TODO send mail as well
+    return {"id": result[0]}
+
+
+@app.get("/api/booked-slots")
+def get_booked_slots(db=Depends(get_db)):
+    query = text("""
+        SELECT 
+            TO_CHAR(start_time, 'DD.MM.YYYY') AS date,
+            TO_CHAR(start_time, 'HH24:MI') AS start_time,
+            TO_CHAR(end_time, 'HH24:MI') AS end_time
+        FROM "Appointment";
+    """)
+    slots = db.execute(query).fetchall()
+    return slots
+
+
+@app.delete("/api/terminabsage/{appointment_id}")
+def cancel_appointment(appointment_id: str, db=Depends(get_db)):
+    query = text('DELETE FROM "Appointment" WHERE id = :id RETURNING *;')
+    result = db.execute(query, {"id": appointment_id}).fetchone()
+    db.commit()
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+
+    send_email("Nancy Nails Termin Abgesagt", os.getenv('EMAIL_TO'), f"Termin mit ID {appointment_id} wurde abgesagt.")
+    return {"message": "Appointment deleted successfully"}
+
+
+@app.get("/api/health")
+def health_check():
+    return {"status": "ok"}
+
+
 
 @app.get("/")
 async def root():
@@ -71,107 +174,3 @@ def generate_ics_file(booking_details, services, total_duration, total_price):
 
     c.events.add(e)
     return str(c)
-
-@app.post('/api/terminanfrage')
-async def handle_booking_request(request: Request):
-    data = await request.json()
-
-    if not data.get('agbChecked'):
-        raise HTTPException(status_code=400, detail='AGBs must be accepted to proceed with the booking.')
-
-    booking_details = data
-    services = data['services']
-    total_duration = sum(service['duration'] for service in services)
-    total_price = sum(service['price'] for service in services)
-
-    query_res = book_appointment(
-        data['email'], data['phone'], data['dateInfo']['date'], data['dateInfo']['startTime'], data['dateInfo']['duration']
-    )
-
-    if query_res.get('error') == "Time slot already booked":
-        raise HTTPException(status_code=400, detail='Termin überschneidet einen gebuchten Block. Wählen Sie einen anderen Zeitpunkt')
-
-    try:
-        ics_content = generate_ics_file(booking_details, services, total_duration, total_price)
-
-        send_email(
-            subject='Neuer Nancy Nails Termin',
-            recipient=os.getenv('EMAIL_TO'),
-            body=f"""
-            Neue Anfrage nach einem Termin: {data['firstname']} {data['lastname']}.
-            Kontakt Details: Email - {data['email']}, Phone - {data['phone']}.
-            Termin ID: {query_res['id']}
-            Datum: {data['date']}, Zeit: {data['time']}
-            Folgende Services wurden gebucht: {', '.join([s['title'] for s in services])}
-            Bemerkung des Kunden: {data.get('bemerkung', '')}
-            """,
-            attachment_content=ics_content,
-            attachment_name='appointment.ics'
-        )
-
-        send_email(
-            subject='Nancy Nails Termin Gebucht',
-            recipient=data['email'],
-            body=f"""
-            Termin wurde erfolgreich gebucht. Termin ID: {query_res['id']}
-            Datum: {data['date']}, Zeit: {data['time']}
-            Folgende Services wurden gebucht: {', '.join([s['title'] for s in services])}
-            """
-        )
-
-        return query_res
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f'Failed to send email: {str(e)}')
-
-def send_email(subject, recipient, body, attachment_content=None, attachment_name=None):
-    sender_email = os.getenv('EMAIL_USER')
-    password = os.getenv('EMAIL_PASSWORD')
-
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = recipient
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
-
-    if attachment_content and attachment_name:
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(attachment_content.encode('utf-8'))
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename={attachment_name}')
-        msg.attach(part)
-
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-    server.login(sender_email, password)
-    text = msg.as_string()
-    server.sendmail(sender_email, recipient, text)
-    server.quit()
-
-def book_appointment(email, phone, date, start_time, duration):
-    # Placeholder function for booking logic
-    return {'id': '12345'}
-
-
-def setup():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        try:
-            # create the table
-            connection.execute(
-                sqlalchemy.text("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name TEXT, email TEXT);")
-            )
-            # insert into table
-            connection.execute(
-                sqlalchemy.text("INSERT INTO users (name, email) VALUES (:name, :email)"),
-                {"name": "Alice", "email": "alice@example.com"}
-            )
-            # fetch all
-            result = connection.execute(sqlalchemy.text("SELECT * FROM users;"))
-            print(result.fetchall())
-
-            # commit
-            transaction.commit()
-
-        except Exception as e:
-            transaction.rollback()
-            print("Error:", e)
