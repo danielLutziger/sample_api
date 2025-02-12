@@ -4,4 +4,4 @@ python-dotenv
 ics
 cloud-sql-python-connector
 sqlalchemy
-psycopg2
+pg8000

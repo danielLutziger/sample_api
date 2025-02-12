@@ -8,13 +8,32 @@ from sqlalchemy.orm import sessionmaker
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import os
+import uvicorn
+from google.cloud.sql.connector import Connector
+
 
 app = FastAPI()
 load_dotenv()
 
-DATABASE_URL = f"postgresql+pg8000://{os.getenv('DB_USER')}:{os.getenv('DB_PASS')}@{os.getenv('INSTANCE_CONNECTION_NAME')}/{os.getenv('DB_NAME')}"
-engine = create_engine(DATABASE_URL)
+connector = Connector()
+
+
+def getconn():
+    return connector.connect(
+        os.getenv("INSTANCE_CONNECTION_NAME"),
+        "pg8000",
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASS"),
+        db=os.getenv("DB_NAME"),
+    )
+
+
+# Create SQLAlchemy engine
+engine = create_engine(
+    "postgresql+pg8000://",
+    creator=getconn
+)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -174,3 +193,8 @@ def generate_ics_file(booking_details, services, total_duration, total_price):
 
     c.events.add(e)
     return str(c)
+
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
