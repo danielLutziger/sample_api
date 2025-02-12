@@ -22,7 +22,7 @@ load_dotenv()
 
 origins = [
     "http://localhost:5173",  # running locally
-    "https://yourfrontend.com"  # deployed URL
+    "https://storage.googleapis.com" # deployed URL
 ]
 
 app.add_middleware(
