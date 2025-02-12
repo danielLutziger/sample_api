@@ -125,6 +125,13 @@ class BookingRequest(BaseModel):
     services: List[Service]
 
 
+class Question(BaseModel):
+    firstname: str
+    email: str
+    phone: str
+    bemerkung: str
+
+
 class AppointmentCancelRequest(BaseModel):
     id: str
 
@@ -303,6 +310,18 @@ def cancel_appointment(booking_hash: str, db=Depends(get_db)):
     send_email("Termin erfolgreich abgesagt", os.getenv("EMAIL_TO"), body)
     send_email("Termin erfolgreich abgesagt", result[2], body)
     return {"message": "Appointment deleted successfully"}
+
+@app.post("/api/anliegen_melden")
+def anliegen_mitteilen(request: Question):
+    print(request)
+    body = (
+        f"Anliegen von {request.firstname} \n"
+        f"Email: {request.email} \n"
+        f"Telefon-Nr: {request.phone} \n"
+        f"Anliegen: {request.bemerkung}"
+    )
+    send_email(f"Anliegen von {request.firstname}", os.getenv("EMAIL_TO"), body)
+    return {"message": "Successfully sent question"}
 
 
 @app.get("/api/health")
