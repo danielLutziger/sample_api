@@ -4,9 +4,6 @@ EMAIL_HOST="smtp server"
 EMAIL_PORT="port"
 EMAIL_TO="email account"
 
-
-GOOGLE_APPLICATION_CREDENTIALS='./pk_location'
-INSTANCE_CONNECTION_NAME=PROJECT-ID:LOCATION:INSTANCE-ID
-DB_NAME='DB-NAME'
-DB_USER='DB-USERNAME'
-DB_PASS='DB-PASSWORD'
+SUPABASE_URL="https://your-project.supabase.co"
+SUPABASE_KEY="your-anon-or-service-role-key"
+DATABASE_URL="postgresql://your-user:your-password@db.supabase.co:5432/postgres"
