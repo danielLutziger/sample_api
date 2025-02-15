@@ -20,7 +20,6 @@ load_dotenv()
 
 origins = [
     "http://localhost:5173",  # running locally
-    "https://storage.googleapis.com", # deployed URL
     "https://just-aloe.oa.r.appspot.com" # deployed URL
 ]
 
@@ -225,15 +224,17 @@ def get_booked_slots():
 @app.delete("/api/terminabsage/{booking_hash}")
 def cancel_appointment(booking_hash: str):
     result = supabase.table("bookings").delete().eq("booking_hash", booking_hash).execute()
-    if not result:
+    if not result.data:
         raise HTTPException(status_code=404, detail="Termin nicht gefunden")
 
+    start_time = datetime.fromisoformat(result.data[0]['start_time'].replace("Z", ""))
+
     body = (
-        f"Buchung für {result[6]} {result[7]} vom {result[4].strftime('%d.%m.%Y')}, {result[4].strftime('%H:%M')} erfolgreich abgesagt."
+        f"Buchung für {result.data[0]['firstname']} {result.data[0]['lastname']} vom {start_time.strftime('%d.%m.%Y')}, {start_time.strftime('%H:%M')} erfolgreich abgesagt."
     )
 
     send_email("Termin erfolgreich abgesagt", os.getenv("EMAIL_TO"), body)
-    send_email("Termin erfolgreich abgesagt", result[2], body)
+    send_email("Termin erfolgreich abgesagt", result.data[0]['user_email'], body)
     return {"message": "Appointment deleted successfully"}
 
 @app.post("/api/anliegen_melden")

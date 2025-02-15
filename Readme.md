@@ -8,71 +8,38 @@ This guide will help you **set up a FastAPI application** on **Google Cloud Run*
 If you haven't already, **create a Google Cloud Project** via the [Google Cloud Console](https://console.cloud.google.com/).
 
 ---
+
 https://supabase.com/
 add information from supabase to .env file
-migrate db to supabase
 
-## 🛠 2. Setup Cloud SQL Database  
+migrate db to supabase form migrations.sql
 
-### ✅ Enable Cloud SQL API  
-- Go to **Google Cloud Console** → **APIs & Services**  
-- Enable **Cloud SQL Admin API**  
+## 🛠 2. Setup Supabase
+```sh
+SUPABASE_URL="https://your-project.supabase.co"
+SUPABASE_KEY="your-anon-or-service-role-key"
+DATABASE_URL="postgresql://your-user:your-password@db.supabase.co:5432/postgres"
+```
+
+## ✅ 3. Enable required services
 
 ```sh
 gcloud auth application-default login
-```
+gcloud config set project PROJECT-ID
 
-```sh
-gcloud config set project fast-aloe
-```
-
-```sh
 gcloud services enable run.googleapis.com
 gcloud services enable cloudbuild.googleapis.com
 gcloud services enable artifactregistry.googleapis.com
-gcloud services enable sqladmin.googleapis.com
 gcloud services enable compute.googleapis.com
 ```
 
-### ✅ Create a Cloud SQL Instance  
-1. Navigate to **Cloud SQL Console**  
-2. Click **"Create Instance"**  
-3. Choose **PostgreSQL**  
-4. Select **Sandbox** (No need for high compute)  
-5. Set an **Instance ID**  
-6. Choose a **Local Zone**  
-7. Set a **Strong Password**  
-8. Copy the **Connection Name** and add it to your `.env` file  
-
 ---
-
-## 🔑 3. Setup IAM & Service Accounts  
-
-### ✅ Create a Service Account & Key  
-1. Navigate to **IAM & Admin** → **Service Accounts**  
-2. Click on **"Create Service Account"**  
-3. Go to the **"Keys"** tab → Click **"Add Key"** → **Create New Key**  
-4. Choose **JSON format** and **Download the key**  
-5. Add the **path to the key** in your `.env` file  
-
----
-
-gcloud projects add-iam-policy-binding fast-aloe --member="serviceAccount:fast-aloe@appspot.gserviceaccount.com" --role="roles/cloudsql.client"
-
 
 ## 🏗 4. Build & Push Docker Image  
 
 ### ✅ **Configure Project**  
 ```sh
-gcloud config set project fast-aloe
-```
-### ✅ Authenticate
-```sh
-gcloud auth application-default login
-```
-### ✅ Enable Artifact Registry
-```sh
-gcloud services enable artifactregistry.googleapis.com
+gcloud config set project PROJECT-ID
 ```
 ### ✅ Create Docker Repository
 ```sh
@@ -84,23 +51,19 @@ gcloud auth configure-docker europe-west6-docker.pkg.dev
 ```
 ### ✅ Build Docker Image
 ```sh
-docker build -t europe-west6-docker.pkg.dev/fast-aloe/fastapi-repo/fastapi-app .
+docker build -t europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app .
 ```
 ### ✅ Push Docker Image
 ```sh
-docker push europe-west6-docker.pkg.dev/fast-aloe/fastapi-repo/fastapi-app
+docker push europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app
 ```
 
 ---
 
 ## 🚀 5. Deploy to Cloud Run
-### ✅ Enable Cloud Run API
-```sh
-gcloud services enable run.googleapis.com
-```
 ### ✅ Deploy FastAPI Service
 ```sh
-gcloud run deploy fastapi-service   --image europe-west6-docker.pkg.dev/fast-aloe/fastapi-repo/fastapi-app --platform managed --region europe-west6 --allow-unauthenticated
+gcloud run deploy fastapi-service   --image europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app --platform managed --region europe-west6 --allow-unauthenticated
 ```
 ### ✅ Test Deployment
 ```sh
@@ -112,16 +75,16 @@ curl https://fastapi-service-xyz.a.run.app/api/health
 ## 🔄 6. Redeploy After Code Changes
 ### ✅ Rebuild Docker Image
 ```sh
-docker build -t europe-west6-docker.pkg.dev/fast-aloe/fastapi-repo/fastapi-app .
+docker build -t europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app .
 ```
 ### ✅ Push Updated Docker Image
 ```sh
-docker push europe-west6-docker.pkg.dev/fast-aloe/fastapi-repo/fastapi-app
+docker push europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app
 ```
 ### ✅ Redeploy to Cloud Run
 ```sh
 gcloud run deploy fastapi-service \
-  --image europe-west6-docker.pkg.dev/fast-aloe/fastapi-repo/fastapi-app \
+  --image europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app \
   --platform managed \
   --region europe-west6 \
   --allow-unauthenticated
