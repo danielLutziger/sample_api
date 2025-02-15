@@ -25,7 +25,7 @@ DATABASE_URL="postgresql://your-user:your-password@db.supabase.co:5432/postgres"
 
 ```sh
 gcloud auth application-default login
-gcloud config set project PROJECT-ID
+gcloud config set project project-id
 
 gcloud services enable run.googleapis.com
 gcloud services enable cloudbuild.googleapis.com
@@ -38,7 +38,7 @@ gcloud services enable artifactregistry.googleapis.com
 
 ### ✅ **Configure Project**  
 ```sh
-gcloud config set project PROJECT-ID
+gcloud config set project project-id
 ```
 ### ✅ Create Docker Repository
 ```sh
@@ -50,11 +50,11 @@ gcloud auth configure-docker europe-west6-docker.pkg.dev
 ```
 ### ✅ Build Docker Image
 ```sh
-docker build -t europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app .
+docker build -t europe-west6-docker.pkg.dev/project-id/fastapi-repo/fastapi-app .
 ```
 ### ✅ Push Docker Image
 ```sh
-docker push europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app
+docker push europe-west6-docker.pkg.dev/project-id/fastapi-repo/fastapi-app
 ```
 
 ---
@@ -62,7 +62,7 @@ docker push europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app
 ## 🚀 5. Deploy to Cloud Run
 ### ✅ Deploy FastAPI Service
 ```sh
-gcloud run deploy fastapi-service   --image europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app --platform managed --region europe-west6 --allow-unauthenticated
+gcloud run deploy fastapi-service   --image europe-west6-docker.pkg.dev/project-id/fastapi-repo/fastapi-app --platform managed --region europe-west6 --allow-unauthenticated
 ```
 ### ✅ Test Deployment
 ```sh
@@ -74,16 +74,16 @@ curl https://fastapi-service-xyz.a.run.app/api/health
 ## 🔄 6. Redeploy After Code Changes
 ### ✅ Rebuild Docker Image
 ```sh
-docker build -t europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app .
+docker build -t europe-west6-docker.pkg.dev/project-id/fastapi-repo/fastapi-app .
 ```
 ### ✅ Push Updated Docker Image
 ```sh
-docker push europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app
+docker push europe-west6-docker.pkg.dev/project-id/fastapi-repo/fastapi-app
 ```
 ### ✅ Redeploy to Cloud Run
 ```sh
 gcloud run deploy fastapi-service \
-  --image europe-west6-docker.pkg.dev/PROJECT-ID/fastapi-repo/fastapi-app \
+  --image europe-west6-docker.pkg.dev/project-id/fastapi-repo/fastapi-app \
   --platform managed \
   --region europe-west6 \
   --allow-unauthenticated

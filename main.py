@@ -20,7 +20,7 @@ load_dotenv()
 
 origins = [
     "http://localhost:5173",  # running locally
-    "https://just-aloe.oa.r.appspot.com" # deployed URL
+    "https://abgelenkt.oa.r.appspot.com" # deployed URL
 ]
 
 app.add_middleware(
