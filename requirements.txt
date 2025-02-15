@@ -5,3 +5,5 @@ ics
 cloud-sql-python-connector
 sqlalchemy
 pg8000
+asyncpg
+supabase
