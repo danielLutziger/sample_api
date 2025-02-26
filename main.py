@@ -1,4 +1,3 @@
-from ics import Calendar, Event
 from dotenv import load_dotenv
 import os
 from fastapi import FastAPI, HTTPException
@@ -11,16 +10,17 @@ from email.mime.base import MIMEBase
 from email import encoders
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
+from supabase import create_client, Client
+from ics import Calendar, Event
 from datetime import datetime, timedelta, timezone
 import uuid
-from supabase import create_client, Client
 
 app = FastAPI()
 load_dotenv()
 
 origins = [
-    "http://localhost:5173",  # running locally
-    "https://abgelenkt.oa.r.appspot.com" # deployed URL
+    "http://localhost:5173",
+    "https://chiar-t.oa.r.appspot.com"
 ]
 
 app.add_middleware(
@@ -81,39 +81,70 @@ class AppointmentCancelRequest(BaseModel):
     id: str
 
 
+from ics import Calendar, Event
+from datetime import datetime, timedelta, timezone
+import uuid
+
+
 def generate_ics_file(booking_details: BookingRequest, services: List[Service], total_duration: int,
                       total_price: float, booking_hash: uuid):
-    c = Calendar()
-    e = Event()
+    try:
+        c = Calendar()
+        e = Event()
 
-    date_parts = booking_details.date.split(".")[::-1]
-    year, month, day = map(int, date_parts)
-    hour, minute = map(int, booking_details.time.split(":"))
+        # ✅ Ensure date format is correctly parsed
+        try:
+            date_parts = booking_details.date.split(".")[::-1]  # "DD.MM.YYYY" → ["YYYY", "MM", "DD"]
+            year, month, day = map(int, date_parts)
+        except ValueError:
+            raise ValueError(f"Invalid date format: {booking_details.date}")
 
-    start_time = datetime(year, month, day, hour, minute, tzinfo=timezone.utc) - timedelta(hours=1)
+        try:
+            hour, minute = map(int, booking_details.time.split(":"))
+        except ValueError:
+            raise ValueError(f"Invalid time format: {booking_details.time}")
 
-    e.begin = start_time.strftime("%Y-%m-%dT%H:%M:%S")
-    e.duration = {
-        'hours': total_duration // 60,
-        'minutes': total_duration % 60
-    }
-    e.name = f"Booking: {', '.join([s.title for s in services])}"
-    servs = ', '.join([f"{s.title} ({s.duration} Minuten)" for s in services])
-    e.description = (
-        f"Termin ID: {booking_hash}\n"
-        f"Buchung für {booking_details.firstname} {booking_details.lastname}\n"
-        f"E-Mail: {booking_details.email}\n"
-        f"Telefon: {booking_details.phone}\n"
-        f"Datum: {booking_details.date}, Zeit: {booking_details.time}\n"
-        f"Services: {servs}\n"
-        f"Ungefährer Preis: CHF {total_price}\n"
-        "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich: +41 79 968 11 84"
-    )
-    e.location = "Kirchgasse 3, 9500 Wil, Schweiz"
-    e.status = "CONFIRMED"
+        # ✅ Fix: Ensure proper timezone handling
+        start_time = datetime(year, month, day, hour, minute, tzinfo=timezone.utc) - timedelta(hours=1)
+        e.begin = start_time
 
-    c.events.add(e)
-    return str(c)
+        # ✅ Fix: Use timedelta for duration
+        e.duration = timedelta(minutes=total_duration)
+
+        # ✅ Fix: Required Outlook-compatible fields
+        e.uid = f"{uuid.uuid4()}@nancynails.com"  # ✅ UID should be globally unique
+        e.timestamp = datetime.utcnow()  # ✅ DTSTAMP is required
+
+        # ✅ Fix: Event details
+        e.name = f"Booking: {', '.join([s.title for s in services])}"
+        servs = ', '.join([f"{s.title} ({s.duration} Min)" for s in services])
+
+        e.description = (
+            f"Termin ID: {booking_hash}\n"
+            f"Buchung für {booking_details.firstname} {booking_details.lastname}\n"
+            f"E-Mail: {booking_details.email}\n"
+            f"Telefon: {booking_details.phone}\n"
+            f"Datum: {booking_details.date}, Zeit: {booking_details.time}\n"
+            f"Services: {servs}\n"
+            f"Ungefährer Preis: CHF {total_price}\n"
+            "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich: +41 79 968 11 84"
+        ).replace("\r\n", "\n")  # ✅ Ensure line breaks are LF (not CRLF)
+
+        e.location = "Kirchgasse 3, 9500 Wil, Schweiz"
+        e.status = "CONFIRMED"
+
+        # ✅ Fix: Add the event correctly
+        c.events.add(e)
+
+        # ✅ Fix: Ensure METHOD:REQUEST manually inside ICS output
+        ics_content = c.serialize()
+        ics_content = ics_content.replace("BEGIN:VCALENDAR", "BEGIN:VCALENDAR\nMETHOD:REQUEST")
+
+        return ics_content
+
+    except Exception as ex:
+        raise ValueError(f"Error generating ICS file: {ex}")
+
 
 
 def send_email(subject, recipient, body, ics_content=None):
@@ -127,10 +158,13 @@ def send_email(subject, recipient, body, ics_content=None):
     msg.attach(MIMEText(body, 'plain'))
 
     if ics_content:
-        ics_attachment = MIMEBase('text', 'calendar')
-        ics_attachment.set_payload(ics_content)
+        ics_attachment = MIMEBase("text", "calendar", method="REQUEST", name="appointment.ics")
+        ics_attachment.set_payload(ics_content.encode("utf-8"))
         encoders.encode_base64(ics_attachment)
-        ics_attachment.add_header('Content-Disposition', 'attachment', filename="appointment.ics")
+
+        ics_attachment.add_header("Content-Disposition", "attachment", filename="appointment.ics")
+        ics_attachment.add_header("Content-Type", "text/calendar; charset=UTF-8; method=REQUEST")
+
         msg.attach(ics_attachment)
 
     server = smtplib.SMTP(os.getenv('EMAIL_HOST'), int(os.getenv('EMAIL_PORT')))
@@ -139,6 +173,24 @@ def send_email(subject, recipient, body, ics_content=None):
     server.sendmail(sender_email, recipient, msg.as_string())
     server.quit()
 
+
+def generate_body(booking_details: BookingRequest, services: List[Service], total_duration: int,
+                      total_price: float, booking_hash: uuid):
+    servs = ', '.join([f"{s.title} ({s.duration} Minuten)" for s in services])
+    body = (
+        f"Ihr Termin wurde erfolgreich gebucht.\n\n"
+        f"Termin ID: {booking_hash}\n\n"
+        f"Buchung für {booking_details.firstname} {booking_details.lastname}\n"
+        f"E-Mail: {booking_details.email}\n"
+        f"Telefon: {booking_details.phone}\n\n"
+        f"Datum: {booking_details.date}, Zeit: {booking_details.time}\n"
+        f"Ungefähre Dauer: {total_duration // 60}h {total_duration % 60}min\n\n"
+        f"Services: {servs}\n"
+        f"Ungefährer Preis: CHF {total_price}\n\n"
+        f"Ort: Kirchgasse 3, 9500 Wil, Schweiz\n\n"
+        "Stornierung: Bis spätestens 2 Tage vorher telefonisch möglich: +41 79 968 11 84"
+    )
+    return body
 
 @app.post("/api/terminanfrage")
 def book_appointment(request: BookingRequest):
@@ -191,10 +243,14 @@ def book_appointment(request: BookingRequest):
         total_price += service.price
 
     try:
-        body = "Ihr Termin wurde erfolgreich gebucht. Bitte finden Sie die Buchungsdetails in der angehängten .ics Datei."
+        body = generate_body(booking_details=request, services=request.services,
+                                total_duration=request.dateInfo.duration, total_price=total_price,
+                                booking_hash=booking_hash)
+
         ics = generate_ics_file(booking_details=request, services=request.services,
                                 total_duration=request.dateInfo.duration, total_price=total_price,
                                 booking_hash=booking_hash)
+
         send_email("Termin erfolgreich gebucht", os.getenv("EMAIL_TO"), body, ics)
         send_email("Termin erfolgreich gebucht", request.email, body, ics)
         return {"id": booking_hash}
